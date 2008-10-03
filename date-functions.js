@@ -15,13 +15,17 @@ Date.parseFunctions = {count:0};
 Date.parseRegexes = [];
 Date.formatFunctions = {count:0};
 
-Date.prototype.dateFormat = function(format) {
+Date.prototype.dateFormat = function(format, ignore_offset) {
     if (Date.formatFunctions[format] == null) {
         Date.createNewFormat(format);
     }
     var func = Date.formatFunctions[format];
-    return this[func]();
-}
+    if (ignore_offset || ! this.offset) {
+      return this[func]();
+    } else {
+      return (new Date(this.valueOf() - this.offset))[func]();
+    }
+};
 
 Date.createNewFormat = function(format) {
     var funcName = "format" + Date.formatFunctions.count++;
@@ -43,7 +47,7 @@ Date.createNewFormat = function(format) {
         }
     }
     eval(code.substring(0, code.length - 3) + ";}");
-}
+};
 
 Date.getFormatCode = function(character) {
     switch (character) {
@@ -104,7 +108,7 @@ Date.getFormatCode = function(character) {
     default:
         return "'" + String.escape(character) + "' + ";
     }
-}
+};
 
 Date.parseDate = function(input, format) {
     if (Date.parseFunctions[format] == null) {
@@ -112,7 +116,7 @@ Date.parseDate = function(input, format) {
     }
     var func = Date.parseFunctions[format];
     return Date[func](input);
-}
+};
 
 Date.createParser = function(format) {
     var funcName = "parse" + Date.parseFunctions.count++;
@@ -121,13 +125,13 @@ Date.createParser = function(format) {
     Date.parseFunctions[format] = funcName;
 
     var code = "Date." + funcName + " = function(input){\n"
-        + "var y = -1, m = -1, d = -1, h = -1, i = -1, s = -1;\n"
+        + "var y = -1, m = -1, d = -1, h = -1, i = -1, s = -1, z = 0;\n"
         + "var d = new Date();\n"
         + "y = d.getFullYear();\n"
         + "m = d.getMonth();\n"
         + "d = d.getDate();\n"
         + "var results = input.match(Date.parseRegexes[" + regexNum + "]);\n"
-        + "if (results && results.length > 0) {"
+        + "if (results && results.length > 0) {" ;
     var regex = "";
 
     var special = false;
@@ -152,22 +156,22 @@ Date.createParser = function(format) {
     }
 
     code += "if (y > 0 && m >= 0 && d > 0 && h >= 0 && i >= 0 && s >= 0)\n"
-        + "{return new Date(y, m, d, h, i, s);}\n"
+        + "{return new Date(y, m, d, h, i, s).applyOffset(z);}\n"
         + "else if (y > 0 && m >= 0 && d > 0 && h >= 0 && i >= 0)\n"
-        + "{return new Date(y, m, d, h, i);}\n"
+        + "{return new Date(y, m, d, h, i).applyOffset(z);}\n"
         + "else if (y > 0 && m >= 0 && d > 0 && h >= 0)\n"
-        + "{return new Date(y, m, d, h);}\n"
+        + "{return new Date(y, m, d, h).applyOffset(z);}\n"
         + "else if (y > 0 && m >= 0 && d > 0)\n"
-        + "{return new Date(y, m, d);}\n"
+        + "{return new Date(y, m, d).applyOffset(z);}\n"
         + "else if (y > 0 && m >= 0)\n"
-        + "{return new Date(y, m);}\n"
+        + "{return new Date(y, m).applyOffset(z);}\n"
         + "else if (y > 0)\n"
-        + "{return new Date(y);}\n"
+        + "{return new Date(y).applyOffset(z);}\n"
         + "}return null;}";
 
     Date.parseRegexes[regexNum] = new RegExp("^" + regex + "$");
     eval(code);
-}
+};
 
 Date.formatCodeToRegex = function(character, currentGroup) {
     switch (character) {
@@ -258,35 +262,56 @@ Date.formatCodeToRegex = function(character, currentGroup) {
             c:"s = parseInt(results[" + currentGroup + "], 10);\n",
             s:"(\\d{2})"};
     case "O":
-        return {g:0,
-            c:null,
-            s:"[+-]\\d{4}"};
+    case "P":
+        return {g:1,
+            c:"z = Date.parseOffset(results[" + currentGroup + "], 10);\n",
+            s:"(Z|[+-]\\d{2}:?\\d{2})"}; // "Z", "+05:00", "+0500" all acceptable.
     case "T":
         return {g:0,
             c:null,
             s:"[A-Z]{3}"};
     case "Z":
-        return {g:0,
-            c:null,
-            s:"[+-]\\d{1,5}"};
+        return {g:1,
+            c:"s = parseInt(results[" + currentGroup + "], 10);\n",
+            s:"([+-]\\d{1,5})"};
     default:
         return {g:0,
             c:null,
             s:String.escape(character)};
     }
-}
+};
+
+Date.parseOffset = function(str) {
+  if (str == "Z") { return 0 ; } // UTC, no offset.
+  var seconds ;
+  seconds = parseInt(str[0] + str[1] + str[2]) * 3600 ; // e.g., "+05" or "-08"
+  if (str[3] == ":") {            // "+HH:MM" is preferred iso8601 format ("O")
+    seconds += parseInt(str[4] + str[5]) * 60;
+  } else {                      // "+HHMM" is frequently used, though. ("P")
+    seconds += parseInt(str[3] + str[4]) * 60;
+  }
+  return seconds ;
+};
+
+// convert the parsed date into UTC, but store the offset so we can optionally use it in dateFormat()
+Date.prototype.applyOffset = function(offset_seconds) {
+  this.offset = offset_seconds * 1000 ;
+  this.setTime(this.valueOf() + this.offset);
+  return this ;
+};
 
 Date.prototype.getTimezone = function() {
     return this.toString().replace(
         /^.*? ([A-Z]{3}) [0-9]{4}.*$/, "$1").replace(
-        /^.*?\(([A-Z])[a-z]+ ([A-Z])[a-z]+ ([A-Z])[a-z]+\)$/, "$1$2$3");
-}
+        /^.*?\(([A-Z])[a-z]+ ([A-Z])[a-z]+ ([A-Z])[a-z]+\)$/, "$1$2$3").replace(
+        /^.*?[0-9]{4} \(([A-Z]{3})\)/, "$1");
+};
 
 Date.prototype.getGMTOffset = function() {
     return (this.getTimezoneOffset() > 0 ? "-" : "+")
         + String.leftPad(Math.floor(this.getTimezoneOffset() / 60), 2, "0")
         + String.leftPad(this.getTimezoneOffset() % 60, 2, "0");
-}
+};
 
 Date.prototype.getDayOfYear = function() {
     var num = 0;
@@ -295,7 +320,7 @@ Date.prototype.getDayOfYear = function() {
         num += Date.daysInMonth[i];
     }
     return num + this.getDate() - 1;
-}
+};
 
 Date.prototype.getWeekOfYear = function() {
     // Skip to Thursday of this week
@@ -305,27 +330,27 @@ Date.prototype.getWeekOfYear = function() {
     var then = (7 - jan1.getDay() + 4);
     document.write(then);
     return String.leftPad(((now - then) / 7) + 1, 2, "0");
-}
+};
 
 Date.prototype.isLeapYear = function() {
     var year = this.getFullYear();
     return ((year & 3) == 0 && (year % 100 || (year % 400 == 0 && year)));
-}
+};
 
 Date.prototype.getFirstDayOfMonth = function() {
     var day = (this.getDay() - (this.getDate() - 1)) % 7;
     return (day < 0) ? (day + 7) : day;
-}
+};
 
 Date.prototype.getLastDayOfMonth = function() {
     var day = (this.getDay() + (Date.daysInMonth[this.getMonth()] - this.getDate())) % 7;
     return (day < 0) ? (day + 7) : day;
-}
+};
 
 Date.prototype.getDaysInMonth = function() {
     Date.daysInMonth[1] = this.isLeapYear() ? 29 : 28;
     return Date.daysInMonth[this.getMonth()];
-}
+};
 
 Date.prototype.getSuffix = function() {
     switch (this.getDate()) {
@@ -342,11 +367,11 @@ Date.prototype.getSuffix = function() {
         default:
             return "th";
     }
-}
+};
 
 String.escape = function(string) {
     return string.replace(/('|\\)/g, "\\$1");
-}
+};
 
 String.leftPad = function (val, size, ch) {
     var result = new String(val);
@@ -357,7 +382,7 @@ String.leftPad = function (val, size, ch) {
         result = ch + result;
     }
     return result;
-}
+};
 
 Date.daysInMonth = [31,28,31,30,31,30,31,31,30,31,30,31];
 Date.monthNames =
@@ -396,8 +421,8 @@ Date.monthNumbers = {
     Nov:10,
     Dec:11};
 Date.patterns = {
-    ISO8601LongPattern:"Y-m-d H:i:s",
-    ISO8601ShortPattern:"Y-m-d",
+    ISO8601LongPattern: "Y\\-m\\-d\\TH\\:i\\:sO",
+    ISO8601ShortPattern: "Y\\-m\\-d",
     ShortDatePattern: "n/j/Y",
     LongDatePattern: "l, F d, Y",
     FullDateTimePattern: "l, F d, Y g:i:s A",
